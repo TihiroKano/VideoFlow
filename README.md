@@ -8,8 +8,9 @@
 ![react](https://img.shields.io/badge/React-19-61DAFB)
 ![rust](https://img.shields.io/badge/Rust-1.77%2B-000000)
 ![webgl](https://img.shields.io/badge/WebGL2-Liquid%20Glass-8A2BE2)
+![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
-![预览](docs/预览图.png)
+<img src="src/assets/app-icon.png" width="120" alt="VideoFlow" />
 
 ---
 
@@ -92,9 +93,7 @@ npm run tauri build  # 产出 release 版与 NSIS 安装包
 **测试**
 
 ```bash
-node --test test/unit/*.test.ts                  # 前端纯函数单测
-cargo test --no-default-features --lib           # Rust 单元测试（无需 GUI 依赖）
-powershell -File test/run-all.ps1                # 一键跑全套
+cargo test --no-default-features --lib   # Rust 单元测试：下载内核与 GUI 解耦，无需 Tauri 依赖
 ```
 
 ---
@@ -127,9 +126,7 @@ VideoFlow/
 │   ├── src/media/           # FFmpeg 封装：remux / 合并 / 转码 / 能力表
 │   ├── src/state.rs         # 任务调度与状态机
 │   └── capabilities/        # Tauri 权限（窗口、对话框）
-├── test/                    # 前端单测与调试脚本
-├── docs/                    # 项目书、实施记录、预览图
-└── bin/                     # sidecar（不入库）
+└── bin/                     # sidecar（不入库，见「准备 sidecar」）
 ```
 
 ---
@@ -144,11 +141,6 @@ VideoFlow/
 
 ---
 
-## 📖 文档
+## 📄 许可证
 
-| 文档 | 内容 |
-|---|---|
-| [项目书](docs/VideoFlow-项目书.md) | 设计目标、架构、玻璃光学模型、交互规范 |
-| [实施记录](docs/实施记录.md) | 逐轮实现与实测记录（含踩坑与验证数据） |
-| [下载功能方案](docs/VideoFlow-下载功能方案.md) | 解析与下载链路的方案说明 |
-| [设计-测试开发版](docs/设计-测试开发版.md) | 视觉与组件设计稿说明 |
+[Apache License 2.0](LICENSE) © 2026 TihiroKano

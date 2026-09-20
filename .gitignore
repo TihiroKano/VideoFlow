@@ -15,9 +15,9 @@ bin/
 *.exe
 WebView2Loader.dll
 
-# 调试截图（体积大、只用于本地比对；生成脚本保留）
-test/_analysis/
-test/**/*.png
+# 文档与测试资料：只在本地保留，不进仓库
+docs/
+test/
 
 # 编辑器
 .vscode/*
