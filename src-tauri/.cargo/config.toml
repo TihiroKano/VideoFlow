@@ -1,0 +1,10 @@
+# 构建产物的存放位置与链接器配置。
+# 目的：把编译产物与 MinGW 链接器固定到 D 盘，避免占用 C 盘空间。
+# 对应环境约束见 docs/设计-测试开发版.md §2 / ADR-001。
+
+[build]
+target-dir = "D:/rust/target"
+
+[target.x86_64-pc-windows-gnu]
+linker = "D:/rust/mingw-extract/mingw64/bin/gcc.exe"
+ar = "D:/rust/mingw-extract/mingw64/bin/ar.exe"

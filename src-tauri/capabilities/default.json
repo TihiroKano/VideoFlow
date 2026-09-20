@@ -1,0 +1,17 @@
+{
+  "identifier": "default",
+  "description": "VideoFlow 桌面端能力集。Tauri 2 中自定义命令无需授权，但插件命令必须显式放开：dialog.open 之外，标题栏的关闭/最小化/最大化与拖动区域（close / minimize / toggle-maximize / start-dragging）也都要在这里授权——core:default 只放开只读的窗口 API，缺了这几条就会「按钮点了没反应、窗口拖不动」，而前端 guard() 会把错误吞掉。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "dialog:default",
+    "dialog:allow-open"
+  ]
+}

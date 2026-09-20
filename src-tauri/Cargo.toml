@@ -1,0 +1,68 @@
+[package]
+name = "videoflow"
+version = "1.0.0"
+description = "VideoFlow - 液态玻璃桌面视频下载器"
+authors = ["VideoFlow"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "videoflow_lib"
+# 仅桌面目标：不产出 cdylib。
+# MinGW 的 ld 在 cdylib 上会启用 auto-export，符号序号超过 65535 时直接报
+# "export ordinal too large"，而该 DLL 在 Windows 桌面场景中并不需要。
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+# GUI 层（Tauri 壳、IPC 命令、调度器）。
+#
+# 默认开启；`--no-default-features` 时只编译纯逻辑层，这样下载内核 / 解析器 /
+# 存储层的单元测试不必链接 WebView2 等 GUI 依赖。
+#
+# 注意：不要把这个 feature 命名为 `desktop`，tauri-build 会自己发出 `--cfg desktop`
+# 用于平台判定，同名会造成 cfg 冲突。
+default = ["gui"]
+gui = ["dep:tauri", "dep:tauri-plugin-dialog"]
+
+[dependencies]
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+trash = "5"
+
+# Provider 提供哈希时的完整性校验（项目书 §3.3）。本机离线，依赖已在 cargo 缓存中。
+sha2 = "0.10"
+
+# 读 WebView2 的 Cookie 时要用到它的类型。版本与 tauri-runtime 保持一致（同为 0.18），
+# 这样 `tauri::webview::Cookie` 与本项目引用的 `cookie::Cookie` 是同一个类型。
+cookie = "0.18"
+
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "process",
+  "io-util",
+  "fs",
+] }
+
+# 使用 native-tls（Windows 走 schannel），避免引入 rustls 带来的大量编译开销
+reqwest = { version = "0.12", features = ["stream", "json"] }
+
+# 开发调试用
+#
+# 本机内存有限（约 7.8 GB），默认的 debug = 2 会让并行 rustc 进程爆内存并触发
+# STATUS_STACK_BUFFER_OVERRUN 崩溃，因此关闭调试信息。
+# 需要断点调试时改成 debug = 2，并配合 cargo build -j 1。
+[profile.dev]
+debug = 0
+incremental = false

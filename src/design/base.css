@@ -1,0 +1,204 @@
+/* 基础复位、排版与窗口骨架 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI",
+    "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--vf-text);
+  background: var(--vf-bg-deep);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* 桌面应用：禁止整页选中与原生拖拽 */
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  box-shadow: var(--vf-focus);
+  border-radius: var(--vf-radius-control);
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * ---- 滚动条（全局统一） ----
+ *
+ * 用**标准属性**（`scrollbar-width` / `scrollbar-color`），不用 `::-webkit-scrollbar`。
+ *
+ * 为什么（实测，踩过两个坑）：
+ * 1. 两套一起写时，Chromium 会**整体忽略** webkit 那套，只认标准属性；
+ * 2. 本机 WebView2 里单写 webkit 那套更糟：它**只占位、不绘制** ——
+ *    面板明明预留了 8px 滚动条宽度，屏幕上却什么都画不出来
+ *    （连强制 `!important` 上色也不显示）。
+ *    换成标准属性后立刻正常（细、透明轨道、半透明白滑块，无上下箭头）。
+ *
+ * 外观策略：平时滑块**完全透明**（等于隐藏，不干扰画面，也不会因出现/消失导致重排），
+ * 滚动时由 `useAutoHideScrollbar` 给滚动容器打上 `vf-scrolling`，显形约 1 秒后隐去。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.vf-scrolling {
+  scrollbar-color: rgb(255 255 255 / 34%) transparent;
+}
+
+/* 需要滚动的地方统一用这个类（滚动条外观已全局定义，这里只管溢出行为） */
+.vf-scroll {
+  overflow-y: auto;
+}
+
+/* ---- 应用根：承载用户上传的静态背景图片 ---- */
+.vf-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /*
+   * 这里刻意不再加圆角（曾经的 --vf-radius-shell: 28px）。
+   * 窗口本身是不透明的方形窗口（tauri.conf.json 里 transparent=false），
+   * 一旦这里裁圆角，圆角之外露出的其实是 body 的深蓝底色 #062f57——
+   * 观感上就是「四角没有被壁纸填满」。壁纸与玻璃画布都要铺满整个窗口矩形，
+   * 所以根节点保持方形，圆角只由内部的面板/控件自己负责。
+   */
+  background-color: var(--vf-bg-deep);
+  background-image: var(--vf-bg-image, none);
+  background-size: var(--vf-bg-fit, cover);
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* WebGL 档位下由 canvas 负责绘制背景与玻璃 */
+.vf-window[data-bg-render="webgl"] {
+  background-image: none;
+}
+
+/* 背景适配层：保证极窄/极宽图片下不露出底色 */
+.vf-bg-layer {
+  position: absolute;
+  inset: 0;
+  background-image: var(--vf-bg-image, none);
+  background-size: var(--vf-bg-fit, cover);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: var(--vf-bg-deep);
+  transition: opacity var(--vf-dur-base) var(--vf-ease),
+    filter var(--vf-dur-base) var(--vf-ease);
+  pointer-events: none;
+}
+
+.vf-window[data-bg-render="webgl"] .vf-bg-layer {
+  opacity: 0;
+}
+
+/* 玻璃 canvas：位于背景之上、DOM 内容之下 */
+.vf-glass-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.vf-window[data-bg-render="css"] .vf-glass-canvas {
+  display: none;
+}
+
+/* 内容层 */
+.vf-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+}
+
+/* 高亮反馈层：不参与折射与命中 */
+.vf-pointer-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ---- 通用工具类 ---- */
+.vf-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.vf-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.vf-title-drag {
+  -webkit-app-region: drag;
+}
+
+.vf-no-drag {
+  -webkit-app-region: no-drag;
+}

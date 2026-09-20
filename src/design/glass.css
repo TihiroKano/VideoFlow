@@ -1,0 +1,301 @@
+/*
+ * 玻璃材质样式
+ *
+ * 合成顺序（见 docs/VideoFlow-项目书.md §5.1）：
+ *   背景图 → 液态玻璃容器 → DOM 内容 → 高亮反馈
+ *
+ * 档位实现：
+ *   L1 quality     —— WebGL2 完整管线（由 GlassCanvas 绘制，本文件只负责裁剪与布局）
+ *   L2 balanced    —— WebGL2 简化管线（同上）
+ *   L3 performance —— 纯 CSS 毛玻璃（backdrop-filter，缺失时回退到预模糊副本）
+ */
+
+/* ---- 声明式玻璃宿主：内容始终清晰可读，不依赖滤镜 ---- */
+.vf-glass-host {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--vf-radius-panel);
+}
+
+/* WebGL 档位：玻璃由 canvas 负责绘制，宿主保持透明仅做裁剪 */
+.vf-glass-host[data-glass-mode="webgl"] {
+  background: transparent;
+  box-shadow: none;
+  /*
+   * Liquid Glass 档的光边由着色器绘制（倒角高光 + Fresnel）。
+   * 如果这里再留一层 DOM 描边，就会和着色器画的光边重叠成「双边缘」：
+   * 实地看是控件四角多出一条细亮线／双弧（用户反馈的「亮线」之一）。
+   * 所以这一档一律不留 DOM 描边；边框的观感完全交给玻璃光学层。
+   */
+  border-color: transparent;
+}
+
+/* CSS 档位：宿主自带材质 */
+.vf-glass-host[data-glass-mode="css"] {
+  background: var(--vf-glass-fill);
+  border: 1px solid var(--vf-glass-border);
+  box-shadow: var(--vf-shadow-panel);
+  -webkit-backdrop-filter: blur(var(--vf-blur-radius)) saturate(150%);
+  backdrop-filter: blur(var(--vf-blur-radius)) saturate(150%);
+}
+
+/* 系统不支持 backdrop-filter 时：半透明实色 + 描边 + 阴影（项目书 §6.3） */
+.vf-glass-host[data-glass-mode="css"][data-glass-blur="solid"] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: color-mix(in srgb, var(--vf-bg-deep) 66%, transparent);
+  border: 1px solid var(--vf-glass-border);
+}
+
+/* ---- 变体：主面板 ---- */
+.vf-glass-host[data-glass-variant="panel"][data-glass-mode="css"] {
+  background: var(--vf-glass-fill);
+  border-radius: var(--vf-radius-panel);
+}
+
+/* ---- 变体：卡片（更高海拔） ---- */
+.vf-glass-host[data-glass-variant="card"][data-glass-mode="css"] {
+  background: var(--vf-glass-fill-strong);
+  border-radius: var(--vf-radius-card);
+  box-shadow: var(--vf-shadow-float);
+}
+
+/* ---- 变体：控件（输入框、选择器） ---- */
+.vf-glass-host[data-glass-variant="control"][data-glass-mode="css"] {
+  background: var(--vf-glass-fill-soft);
+  border: 1px solid var(--vf-glass-border-soft);
+  border-radius: var(--vf-radius-control);
+  box-shadow: var(--vf-shadow-control);
+}
+
+/* ---- 内容层：子元素不受玻璃影响 ---- */
+.vf-glass-host > * {
+  position: relative;
+}
+
+/* ---- 高亮反馈：仅在指针附近，不参与折射 ---- */
+.vf-glass-host[data-glass-interactive="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    140px circle at var(--vf-pointer-x, 50%) var(--vf-pointer-y, 50%),
+    rgb(255 255 255 / 18%),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity var(--vf-dur-base) var(--vf-ease);
+  z-index: 3;
+}
+
+.vf-glass-host[data-glass-interactive="true"]:hover::after {
+  opacity: 1;
+}
+
+/*
+ * Liquid Glass 档的「装饰性细白线」统一压淡。
+ *
+ * 这些描边（虚线投放框、次级按钮、分割线）是按 CSS 档那张不透明衬底调的，
+ * 叠在 Liquid Glass 上时，衬底更暗、对比更高，就变成刺眼的亮线。
+ * 只调不透明度，不动宽度/颜色以外的东西——布局、尺寸、间距、位置一律不变。
+ */
+.vf-glass-host[data-glass-mode="webgl"] .vf-convert__dropzone {
+  border-color: rgb(255 255 255 / 13%);
+}
+
+.vf-glass-host[data-glass-mode="webgl"] .vf-btn-ghost,
+.vf-glass-host[data-glass-mode="webgl"] .vf-workbench__divider,
+.vf-glass-host[data-glass-mode="webgl"] .vf-divider {
+  border-color: rgb(255 255 255 / 12%);
+}
+
+.vf-glass-host[data-glass-mode="webgl"] .vf-workbench__divider,
+.vf-glass-host[data-glass-mode="webgl"] .vf-divider {
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 10%), transparent);
+}
+
+/* ---- 分段控件与胶囊按钮的材质 ---- */
+.vf-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-glass-fill);
+  border: 1px solid var(--vf-glass-border);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: var(--vf-shadow-control);
+}
+
+.vf-segmented__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 22px;
+  border-radius: var(--vf-radius-pill);
+  color: var(--vf-text-muted);
+  font-size: 15px;
+  font-weight: 500;
+  transition: color var(--vf-dur-fast) var(--vf-ease),
+    background var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-segmented__item:hover {
+  color: var(--vf-text);
+}
+
+.vf-segmented__item[aria-selected="true"] {
+  color: var(--vf-text);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--vf-accent) 88%, white 12%),
+    var(--vf-accent-strong)
+  );
+  box-shadow: 0 4px 16px rgb(63 141 253 / 38%),
+    inset 0 1px 0 rgb(255 255 255 / 45%);
+}
+
+/* ---- 主操作按钮（开始下载 / 解析） ---- */
+.vf-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: var(--vf-radius-pill);
+  color: #fff;
+  font-weight: 600;
+  /* 按钮文案不换行，窄窗口下保持胶囊形状 */
+  white-space: nowrap;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--vf-accent) 76%, white 24%),
+    var(--vf-accent-strong)
+  );
+  box-shadow: 0 8px 24px rgb(63 141 253 / 34%),
+    inset 0 1px 0 rgb(255 255 255 / 50%);
+  transition: transform var(--vf-dur-fast) var(--vf-ease),
+    box-shadow var(--vf-dur-fast) var(--vf-ease),
+    filter var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  box-shadow: 0 10px 30px rgb(63 141 253 / 44%),
+    inset 0 1px 0 rgb(255 255 255 / 58%);
+}
+
+.vf-btn-primary:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.vf-btn-primary:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+/* ---- 次级按钮：玻璃胶囊 ---- */
+.vf-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--vf-radius-pill);
+  color: var(--vf-text);
+  white-space: nowrap;
+  background: var(--vf-glass-fill);
+  border: 1px solid var(--vf-glass-border-soft);
+  transition: background var(--vf-dur-fast) var(--vf-ease),
+    border-color var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-btn-ghost:hover:not(:disabled) {
+  background: var(--vf-glass-fill-strong);
+  border-color: var(--vf-glass-border);
+}
+
+.vf-btn-ghost:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+/* ---- 圆形图标按钮 ---- */
+.vf-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--vf-text);
+  background: var(--vf-glass-fill);
+  border: 1px solid var(--vf-glass-border-soft);
+  transition: background var(--vf-dur-fast) var(--vf-ease),
+    color var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-btn-icon:hover:not(:disabled) {
+  background: var(--vf-glass-fill-strong);
+}
+
+.vf-btn-icon[data-tone="danger"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vf-danger) 34%, transparent);
+}
+
+.vf-btn-icon:disabled {
+  opacity: 0.4;
+}
+
+/* ---- 下拉选择器 ---- */
+.vf-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 46px;
+  padding: 0 40px 0 18px;
+  border-radius: var(--vf-radius-control);
+  background: var(--vf-glass-fill-soft);
+  border: 1px solid var(--vf-glass-border-soft);
+  color: var(--vf-text);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background var(--vf-dur-fast) var(--vf-ease),
+    border-color var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-select:hover {
+  background: var(--vf-glass-fill);
+  border-color: var(--vf-glass-border);
+}
+
+.vf-select__chevron {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* 原生 select 覆盖在自定义外观之上，保证键盘与读屏可用 */
+.vf-select__native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  border: none;
+  background: transparent;
+}
+
+/* ---- 表单字段标签 ---- */
+.vf-field-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--vf-text-muted);
+}

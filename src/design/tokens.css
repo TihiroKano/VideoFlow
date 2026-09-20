@@ -1,0 +1,96 @@
+/*
+ * VideoFlow 设计令牌
+ * 来源：docs/VideoFlow-项目书.md §5.3，并按 docs/预览图.png 采样校准。
+ * 规则：组件内不得散落硬编码色值、模糊半径与圆角。
+ */
+
+:root {
+  /* ---- 品牌与语义色 ---- */
+  --vf-bg: #0b5e9f;
+  --vf-bg-deep: #062f57;
+  --vf-accent: #82c9ff;
+  --vf-accent-strong: #3f8dfd;
+  --vf-accent-soft: #6fb6ff;
+
+  --vf-text: #f5f9ff;
+  --vf-text-muted: color-mix(in srgb, var(--vf-text) 72%, transparent);
+  --vf-text-faint: color-mix(in srgb, var(--vf-text) 52%, transparent);
+
+  --vf-success: #66d9a2;
+  --vf-warning: #ffd17c;
+  --vf-danger: #ff8a9d;
+
+  /* ---- 圆角 ---- */
+  --vf-radius-shell: 28px;
+  --vf-radius-panel: 22px;
+  --vf-radius-card: 18px;
+  --vf-radius-control: 14px;
+  --vf-radius-pill: 999px;
+
+  /* ---- 间距 ---- */
+  --vf-space-1: 4px;
+  --vf-space-2: 8px;
+  --vf-space-3: 12px;
+  --vf-space-4: 16px;
+  --vf-space-5: 20px;
+  --vf-space-6: 24px;
+  --vf-space-8: 32px;
+  --vf-space-10: 40px;
+
+  /* ---- 玻璃材质 ---- */
+  --vf-glass-fill: rgb(238 245 255 / 12%);
+  --vf-glass-fill-strong: rgb(238 245 255 / 18%);
+  --vf-glass-fill-soft: rgb(238 245 255 / 8%);
+  --vf-glass-border: rgb(255 255 255 / 25%);
+  --vf-glass-border-soft: rgb(255 255 255 / 14%);
+  --vf-glass-inner-glow: rgb(255 255 255 / 30%);
+
+  /* ---- 阴影 ---- */
+  --vf-shadow-float: 0 16px 48px rgb(0 0 0 / 24%);
+  --vf-shadow-panel: 0 24px 64px rgb(4 22 46 / 32%);
+  --vf-shadow-control: 0 6px 18px rgb(4 22 46 / 22%);
+
+  /* ---- 焦点 ---- */
+  --vf-focus: 0 0 0 3px rgb(143 184 255 / 66%);
+
+  /* ---- 布局（按 1536×1024 预览图比例，随窗口自适应） ---- */
+  --vf-app-pad: 22px;
+  --vf-sidebar-w: clamp(196px, 15.5vw, 238px);
+  --vf-column-gap: 20px;
+  --vf-topbar-h: 74px;
+  --vf-bottom-center: 40px;
+
+  /* ---- 玻璃光学参数（供 WebGL 与 CSS 共享） ---- */
+  --vf-blur-radius: 26px;
+  --vf-glass-opacity: 0.16;
+
+  /* ---- 动效 ---- */
+  --vf-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --vf-dur-fast: 150ms;
+  --vf-dur-base: 200ms;
+  --vf-dur-slow: 240ms;
+}
+
+/* 减少动效：系统偏好或用户在设置中开启 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --vf-dur-fast: 0ms;
+    --vf-dur-base: 0ms;
+    --vf-dur-slow: 0ms;
+  }
+}
+
+html[data-vf-reduced-motion="true"] {
+  --vf-dur-fast: 0ms;
+  --vf-dur-base: 0ms;
+  --vf-dur-slow: 0ms;
+}
+
+/* 高对比度：取消透明材质，保证可读性 */
+html[data-vf-contrast="high"] {
+  --vf-glass-fill: rgb(9 42 78 / 92%);
+  --vf-glass-fill-strong: rgb(12 52 94 / 95%);
+  --vf-glass-fill-soft: rgb(9 42 78 / 88%);
+  --vf-glass-border: rgb(255 255 255 / 62%);
+  --vf-glass-border-soft: rgb(255 255 255 / 42%);
+}
