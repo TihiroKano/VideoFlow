@@ -17,6 +17,7 @@ pub mod downloader;
 pub mod error;
 pub mod history;
 pub mod media;
+pub mod net;
 pub mod platform;
 pub mod resolver;
 pub mod storage;
@@ -160,6 +161,7 @@ mod desktop {
                 crate::commands::read_image_as_data_url,
                 crate::commands::ensure_download_dir,
                 crate::commands::sidecar_status,
+                crate::commands::network_diagnostics,
             ])
             .build(tauri::generate_context!())
             .expect("VideoFlow 启动失败");

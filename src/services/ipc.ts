@@ -184,6 +184,44 @@ export function cookieSourceStatus(source: string): Promise<CookieSourceStatus> 
   return call<CookieSourceStatus>("cookie_source_status", { source });
 }
 
+/**
+ * 网络诊断：一条出口路径（本机 DNS / 直连 / 系统代理 / 自定义代理）的探测结果。
+ *
+ * `available` 表示这条路径能不能访问 X；`detail` 是给人看的说明（HTTP 状态码、
+ * 失败原因等）。
+ */
+export interface NetworkPathProbe {
+  label: string;
+  available: boolean;
+  detail: string;
+  latencyMs?: number | null;
+}
+
+export interface NetworkDiagnostics {
+  /** 当前模式：direct / system / custom */
+  mode: string;
+  modeLabel: string;
+  /** 当前实际使用的代理（已脱敏），null = 直连 */
+  activeProxy?: string | null;
+  activeProxySource: string;
+  dns: NetworkPathProbe;
+  /** 代理端口本身的连通性（无代理时为 null） */
+  activeProxyEndpoint?: NetworkPathProbe | null;
+  direct: NetworkPathProbe;
+  system: NetworkPathProbe;
+  custom: NetworkPathProbe;
+  /** 当前出口配置有没有问题（界面据此决定要不要提醒） */
+  proxyOk: boolean;
+  /** 当前出口能不能访问 X */
+  xReachable: boolean;
+  /** 一句话结论 + 该怎么做 */
+  verdict: string;
+}
+
+export function networkDiagnostics(): Promise<NetworkDiagnostics> {
+  return call<NetworkDiagnostics>("network_diagnostics");
+}
+
 // ---- 账户登录 ----
 
 /** 一个可登录站点的状态 */

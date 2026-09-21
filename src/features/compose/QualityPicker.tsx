@@ -4,8 +4,7 @@
  */
 
 import { useMemo } from "react";
-import { GlassSurface } from "@/components/glass/GlassSurface";
-import { IconChevronDown } from "@/components/icons";
+import { GlassSelect } from "@/components/controls/GlassSelect";
 import { formatBytes } from "@/services/ipc";
 import type { MediaStream, ResolvedMedia, StreamSelection } from "@/services/types";
 
@@ -90,107 +89,69 @@ export function QualityPicker({
     onChange({ ...base, ...patch });
   };
 
+  const qualityDisplay = selectedStream
+    ? `${qualityLabel(selectedStream)}${codecLabel(selectedStream.codec) ? ` · ${codecLabel(selectedStream.codec)}` : ""}${selectedStream.id === recommendedId && videoStreams.length > 1 ? "（推荐）" : ""}`
+    : "无可用清晰度";
+
+  const qualityOptions = videoStreams.map((s) => ({
+    key: s.id,
+    label: `${qualityLabel(s)}${s.height && s.fps ? ` · ${s.height}P ${s.fps}fps` : ""}${s.id === recommendedId && videoStreams.length > 1 ? "（推荐）" : ""}${codecLabel(s.codec) ? ` · ${codecLabel(s.codec)}` : ""} · ${formatBytes(s.estimatedBytes)}`,
+  }));
+
+  const audioOptions =
+    audioStreams.length === 0
+      ? [{ key: "", label: "已包含在视频流中" }]
+      : audioStreams.map((s) => ({ key: s.id, label: s.audioLabel ?? s.container.toUpperCase() }));
+
   return (
     <div className="vf-picker">
       <div className="vf-picker__field">
         <label className="vf-field-label" htmlFor="vf-quality-select">
           清晰度
         </label>
-        <GlassSurface variant="control" className="vf-select" tint={0.32} opacity={0.7}>
-          <span className="vf-select__value vf-truncate">
-            {selectedStream ? qualityLabel(selectedStream) : "无可用清晰度"}
-            {selectedStream && codecLabel(selectedStream.codec)
-              ? ` · ${codecLabel(selectedStream.codec)}`
-              : ""}
-            {selectedStream?.id === recommendedId && videoStreams.length > 1 ? "（推荐）" : ""}
-          </span>
-          <span className="vf-select__chevron">
-            <IconChevronDown size={18} />
-          </span>
-          <select
-            id="vf-quality-select"
-            className="vf-select__native"
-            value={selectedStream?.id ?? ""}
-            disabled={disabled || videoStreams.length === 0}
-            aria-label="清晰度"
-            onChange={(e) => update({ streamId: e.target.value })}
-          >
-            {videoStreams.map((s) => (
-              <option key={s.id} value={s.id}>
-                {qualityLabel(s)}
-                {s.height && s.fps ? ` · ${s.height}P ${s.fps}fps` : ""}
-                {s.id === recommendedId && videoStreams.length > 1 ? "（推荐）" : ""}
-                {codecLabel(s.codec) ? ` · ${codecLabel(s.codec)}` : ""}
-                {` · ${formatBytes(s.estimatedBytes)}`}
-              </option>
-            ))}
-          </select>
-        </GlassSurface>
+        <GlassSelect
+          id="vf-quality-select"
+          value={selectedStream?.id ?? ""}
+          display={qualityDisplay}
+          options={qualityOptions}
+          disabled={disabled || videoStreams.length === 0}
+          onChange={(streamId) => update({ streamId })}
+        />
       </div>
 
       <div className="vf-picker__field">
         <label className="vf-field-label" htmlFor="vf-format-select">
           格式
         </label>
-        <GlassSurface variant="control" className="vf-select" tint={0.32} opacity={0.7}>
-          <span className="vf-select__value vf-truncate">
-            {selectedStream ? selectedStream.container.toUpperCase() : "待确认"}
-          </span>
-          <span className="vf-select__chevron">
-            <IconChevronDown size={18} />
-          </span>
-          <select
-            id="vf-format-select"
-            className="vf-select__native"
-            value={selectedStream?.container ?? ""}
-            disabled={disabled || containers.length <= 1}
-            aria-label="封装格式"
-            onChange={() => {
-              /* 同一流内不做容器转换；如需转码走格式转换模式 */
-            }}
-          >
-            {containers.map((c) => (
-              <option key={c} value={c.toLowerCase()}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </GlassSurface>
+        <GlassSelect
+          id="vf-format-select"
+          value={selectedStream ? selectedStream.container.toLowerCase() : ""}
+          display={selectedStream ? selectedStream.container.toUpperCase() : "待确认"}
+          options={containers.map((c) => ({ key: c.toLowerCase(), label: c }))}
+          disabled={disabled || containers.length <= 1}
+          onChange={() => {
+            /* 同一流内不做容器转换；如需转码走格式转换模式 */
+          }}
+        />
       </div>
 
       <div className="vf-picker__field">
         <label className="vf-field-label" htmlFor="vf-audio-select">
           音频
         </label>
-        <GlassSurface variant="control" className="vf-select" tint={0.32} opacity={0.7}>
-          <span className="vf-select__value vf-truncate">
-            {audioStreams.length > 0
-              ? (audioStreams.find((s) => s.id === selection?.audioStreamId) ?? audioStreams[0])
-                  ?.audioLabel ?? "默认音频"
-              : (selectedStream?.audioLabel ?? "无需单独音轨")}
-          </span>
-          <span className="vf-select__chevron">
-            <IconChevronDown size={18} />
-          </span>
-          <select
-            id="vf-audio-select"
-            className="vf-select__native"
-            value={selection?.audioStreamId ?? ""}
-            disabled={disabled || audioStreams.length === 0}
-            aria-label="音频"
-            onChange={(e) => update({ audioStreamId: e.target.value || undefined })}
-          >
-            {audioStreams.length === 0 ? (
-              <option value="">已包含在视频流中</option>
-            ) : (
-              audioStreams.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.audioLabel ?? s.container.toUpperCase()}
-                </option>
-              ))
-            )}
-          </select>
-        </GlassSurface>
+        <GlassSelect
+          id="vf-audio-select"
+          value={selection?.audioStreamId ?? ""}
+          display={
+            audioStreams.length > 0
+              ? ((audioStreams.find((s) => s.id === selection?.audioStreamId) ?? audioStreams[0])
+                  ?.audioLabel ?? "默认音频")
+              : (selectedStream?.audioLabel ?? "无需单独音轨")
+          }
+          options={audioOptions}
+          disabled={disabled || audioStreams.length === 0}
+          onChange={(audioStreamId) => update({ audioStreamId: audioStreamId || undefined })}
+        />
       </div>
     </div>
   );

@@ -12,10 +12,62 @@ use url::Url;
 
 use crate::core::model::{MediaStream, ResolvedMedia, StreamKind, SubtitleTrack};
 use crate::error::{AppError, AppResult};
+use crate::net::ProxyConfig;
 use crate::platform::sidecar;
 use crate::resolver::RESOLVE_TTL_SECS;
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 直连模式必须从子进程环境里清掉的代理变量。
+///
+/// yt-dlp（Python 的 urllib）会自己读这些变量，不清掉的话用户在应用里选了「直连」，
+/// 子进程照样走代理——「名义直连、实际走代理」是最难排查的一类不一致。
+const PROXY_ENV_KEYS: [&str; 6] = [
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+];
+
+/// yt-dlp 的出口参数：一次算好 `--proxy` 与环境清理，避免重复探测系统代理。
+///
+/// 解析链路与下载链路共用，保证「解析用哪个出口、下载就用哪个出口」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YtDlpProxy {
+    /// `--proxy` 的取值；None = 不传（由 yt-dlp 自己决定，但环境已被清理）
+    pub url: Option<String>,
+    /// 是否需要清理子进程环境里的代理变量
+    pub clear_env: bool,
+}
+
+impl YtDlpProxy {
+    pub fn from_config(proxy: &ProxyConfig) -> Self {
+        let url = proxy.effective_url();
+        Self {
+            clear_env: url.is_none(),
+            url,
+        }
+    }
+
+    /// 追加到命令行
+    pub fn append_args(&self, args: &mut Vec<String>) {
+        if let Some(url) = &self.url {
+            args.push("--proxy".into());
+            args.push(url.clone());
+        }
+    }
+
+    /// 直连时把环境里的代理变量清掉
+    pub fn apply_env(&self, cmd: &mut Command) {
+        if self.clear_env {
+            for key in PROXY_ENV_KEYS {
+                cmd.env_remove(key);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct RawFormat {
@@ -194,7 +246,11 @@ fn classify_stderr(text: &str, cookies_source: Option<&str>) -> AppError {
     AppError::new("PROVIDER_ERROR", "解析失败", false).with_detail(text.trim().to_string())
 }
 
-async fn run_ytdlp(args: &[String], cookies_source: Option<&str>) -> AppResult<String> {
+async fn run_ytdlp(
+    args: &[String],
+    cookies_source: Option<&str>,
+    proxy: &YtDlpProxy,
+) -> AppResult<String> {
     let exe = sidecar::yt_dlp_path().ok_or_else(AppError::provider_tool_missing)?;
 
     let mut cmd = Command::new(&exe);
@@ -204,6 +260,8 @@ async fn run_ytdlp(args: &[String], cookies_source: Option<&str>) -> AppResult<S
         .stderr(Stdio::piped())
         .env("PYTHONIOENCODING", "utf-8")
         .kill_on_drop(true);
+    // 直连模式：把环境里的代理变量清掉，避免子进程偷偷走代理
+    proxy.apply_env(&mut cmd);
 
     #[cfg(windows)]
     {
@@ -237,14 +295,14 @@ async fn run_ytdlp(args: &[String], cookies_source: Option<&str>) -> AppResult<S
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// 用 yt-dlp 解析站点页面。
+///
+/// `proxy` 决定出口：会转成 `--proxy`（直连时不传，并清掉子进程的代理环境变量）。
 pub async fn resolve(
-    client: &reqwest::Client,
     url: &Url,
     cookies_source: Option<&str>,
+    proxy: &ProxyConfig,
 ) -> AppResult<ResolvedMedia> {
-    // 优先使用站点直链解析（Bilibili/YouTube 等）；这里让 yt-dlp 自己处理
-    let _ = client;
-
     let mut args: Vec<String> = vec![
         "--dump-single-json".into(),
         "--no-warnings".into(),
@@ -255,9 +313,11 @@ pub async fn resolve(
     ];
     // 复用登录态：抖音的播放地址与 Bilibili 的高清晰度都要求已登录
     append_cookie_args(&mut args, cookies_source);
+    let ytdlp_proxy = YtDlpProxy::from_config(proxy);
+    ytdlp_proxy.append_args(&mut args);
     args.push(url.to_string());
 
-    let stdout = run_ytdlp(&args, cookies_source).await?;
+    let stdout = run_ytdlp(&args, cookies_source, &ytdlp_proxy).await?;
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Err(AppError::new("PROVIDER_EMPTY", "解析没有返回任何内容", false));
@@ -514,5 +574,43 @@ mod tests {
         append_cookie_args(&mut args, None);
         append_cookie_args(&mut args, Some(""));
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn 出口参数按模式拼装() {
+        use crate::net::{ProxyConfig, ProxyMode};
+
+        // 自定义代理：传 --proxy，不动环境变量
+        let custom = ProxyConfig {
+            mode: ProxyMode::Custom,
+            custom_url: "socks5h://127.0.0.1:7897".into(),
+        };
+        let ytdlp_proxy = YtDlpProxy::from_config(&custom);
+        assert_eq!(ytdlp_proxy.url.as_deref(), Some("socks5h://127.0.0.1:7897"));
+        assert!(!ytdlp_proxy.clear_env);
+        let mut args = Vec::new();
+        ytdlp_proxy.append_args(&mut args);
+        assert_eq!(args, vec!["--proxy", "socks5h://127.0.0.1:7897"]);
+
+        // 直连：不传 --proxy，但必须清环境变量（否则子进程偷偷走代理）
+        let direct = ProxyConfig {
+            mode: ProxyMode::Direct,
+            custom_url: "socks5h://127.0.0.1:7897".into(),
+        };
+        let ytdlp_proxy = YtDlpProxy::from_config(&direct);
+        assert!(ytdlp_proxy.url.is_none());
+        assert!(ytdlp_proxy.clear_env);
+        let mut args = Vec::new();
+        ytdlp_proxy.append_args(&mut args);
+        assert!(args.is_empty(), "直连不该出现 --proxy");
+
+        // 地址写坏时按直连处理：宁可直连，也不能把非法串塞给 yt-dlp
+        let broken = ProxyConfig {
+            mode: ProxyMode::Custom,
+            custom_url: "ftp://127.0.0.1:21".into(),
+        };
+        let ytdlp_proxy = YtDlpProxy::from_config(&broken);
+        assert!(ytdlp_proxy.url.is_none());
+        assert!(ytdlp_proxy.clear_env);
     }
 }

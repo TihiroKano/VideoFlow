@@ -9,6 +9,7 @@ pub mod browser;
 pub mod direct;
 pub mod hls;
 pub mod m3u8;
+pub mod xdown;
 pub mod ytdlp;
 
 use std::net::IpAddr;
@@ -17,6 +18,7 @@ use url::Url;
 
 use crate::core::model::ResolvedMedia;
 use crate::error::{AppError, AppResult};
+use crate::net::ProxyConfig;
 
 /// 可用的 Provider 种类
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +85,8 @@ fn is_likely_direct_media(url: &Url) -> bool {
     MEDIA_EXT.iter().any(|ext| path.ends_with(ext))
 }
 
-/// 内网 / 回环 / 链路本地地址判定
-fn is_blocked_ip(ip: IpAddr) -> bool {
+/// 内网 / 回环 / 链路本地地址判定（`net::diag` 的 DNS 定性也用它）
+pub(crate) fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             v4.is_private()
@@ -99,8 +101,33 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// SSRF 防护：scheme、主机名、并做一次 DNS 解析后的 IP 复校（项目书 §3.1 第 2 条）
-pub async fn guard_url(url: &str) -> AppResult<Url> {
+/// DNS 复校的判定：解析不出地址说明域名不可用；出现内网 / 回环地址则按**域名污染**处理。
+///
+/// 与「用户自己填了内网地址」区分开：那种情况走 `URL_PRIVATE`，这里链接本身是公网
+/// 域名，是本机 DNS 给出了内网答案（污染或分流），文案与解决办法都不同。
+fn check_resolved(host: &str, ips: &[IpAddr]) -> AppResult<()> {
+    if ips.is_empty() {
+        return Err(AppError::network("域名无法解析"));
+    }
+    if ips.iter().any(|ip| is_blocked_ip(*ip)) {
+        return Err(AppError::network_dns_polluted(host));
+    }
+    Ok(())
+}
+
+/// SSRF 防护：scheme、主机名，并在「域名由本机解析」时做一次 DNS 后的 IP 复校
+/// （项目书 §3.1 第 2 条）。
+///
+/// 复校只在请求真的会用本机 DNS 时才有意义。代理生效时（`ProxyConfig::is_active`）
+/// 域名交给代理端解析，本机这份结果既不参与连接，在域名被污染或分流的网络里还会把
+/// 公网域名解析成 127.0.0.1 —— 那样 `x.com` 会被判成内网地址直接拦下，连 yt-dlp 都
+/// 起不来，而用户填的明明是公网链接。
+///
+/// 需要如实记录的原理上限：走代理时**无法**做 DNS 重绑定复校（域名解析发生在代理端，
+/// 本机拿不到代理最终连的地址）。所以字面量判定必须独立于这一层：
+/// 非 https、`localhost` / `*.local` / `*.internal`、以及字面量的内网 / 回环 /
+/// 链路本地 / CGNAT 地址，任何模式下都照拦不误。
+pub async fn guard_url(url: &str, proxy: &ProxyConfig) -> AppResult<Url> {
     let parsed = Url::parse(url).map_err(|_| AppError::url_malformed())?;
 
     if parsed.scheme() != "https" {
@@ -121,20 +148,16 @@ pub async fn guard_url(url: &str) -> AppResult<Url> {
         return Ok(parsed);
     }
 
+    if proxy.is_active() {
+        return Ok(parsed);
+    }
+
     // DNS 解析后再次校验，避免 DNS 重绑定指向内网
     let port = parsed.port_or_known_default().unwrap_or(443);
     match tokio::net::lookup_host((host.as_str(), port)).await {
         Ok(addrs) => {
-            let mut any = false;
-            for addr in addrs {
-                any = true;
-                if is_blocked_ip(addr.ip()) {
-                    return Err(AppError::url_private());
-                }
-            }
-            if !any {
-                return Err(AppError::network("域名无法解析"));
-            }
+            let ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
+            check_resolved(&host, &ips)?;
         }
         Err(_) => return Err(AppError::network("域名无法解析")),
     }
@@ -146,8 +169,8 @@ pub async fn guard_url(url: &str) -> AppResult<Url> {
 ///
 /// 拆出来是给 GUI 侧的派发用：`Browser` 需要 AppHandle 才能开窗口，
 /// 而本模块要保持不依赖 Tauri，所以调用方先在这里拿到种类再决定走哪条路。
-pub async fn classify(url: &str) -> AppResult<(Url, ProviderKind)> {
-    let parsed = guard_url(url).await?;
+pub async fn classify(url: &str, proxy: &ProxyConfig) -> AppResult<(Url, ProviderKind)> {
+    let parsed = guard_url(url, proxy).await?;
     let kind = registry(parsed.as_str())?;
     Ok((parsed, kind))
 }
@@ -156,6 +179,7 @@ pub async fn classify(url: &str) -> AppResult<(Url, ProviderKind)> {
 ///
 /// `cookies_source` 为登录态来源（见 `ytdlp::append_cookie_args`）：yt-dlp 会复用
 /// 该浏览器已登录的会话，或读取导出的 cookies.txt。
+/// `proxy` 决定出口，yt-dlp 侧转成 `--proxy`。
 ///
 /// 注意：`ProviderKind::Browser` 不走这里——它需要 `AppHandle` 开内嵌浏览器，
 /// 由 GUI 侧派发（见 `commands::resolve_media`）。
@@ -163,12 +187,13 @@ pub async fn resolve(
     client: &reqwest::Client,
     url: &str,
     cookies_source: Option<&str>,
+    proxy: &ProxyConfig,
 ) -> AppResult<ResolvedMedia> {
-    let (parsed, kind) = classify(url).await?;
+    let (parsed, kind) = classify(url, proxy).await?;
     match kind {
         ProviderKind::Direct => direct::resolve(client, &parsed).await,
         ProviderKind::Hls => hls::resolve(client, &parsed).await,
-        ProviderKind::YtDlp => ytdlp::resolve(client, &parsed, cookies_source).await,
+        ProviderKind::YtDlp => ytdlp::resolve(&parsed, cookies_source, proxy).await,
         ProviderKind::Browser => Err(AppError::new(
             "PROVIDER_BROWSER_UNAVAILABLE",
             "该站点需要通过内嵌浏览器解析",
@@ -307,24 +332,114 @@ mod tests {
         }
     }
 
+    /// 直连出口：会做本地 DNS 复校
+    fn direct_proxy() -> ProxyConfig {
+        ProxyConfig {
+            mode: crate::net::ProxyMode::Direct,
+            custom_url: String::new(),
+        }
+    }
+
+    /// 走代理的出口：跳过本地 DNS 复校（不产生任何网络 IO，`is_active` 只看配置）
+    fn active_proxy() -> ProxyConfig {
+        ProxyConfig {
+            mode: crate::net::ProxyMode::Custom,
+            custom_url: "http://127.0.0.1:7890".into(),
+        }
+    }
+
     #[tokio::test]
     async fn 守卫拒绝回环与内网字面量() {
         assert_eq!(
-            guard_url("https://127.0.0.1/a.mp4").await.unwrap_err().code,
+            guard_url("https://127.0.0.1/a.mp4", &direct_proxy())
+                .await
+                .unwrap_err()
+                .code,
             "URL_PRIVATE"
         );
         assert_eq!(
-            guard_url("https://localhost/a.mp4").await.unwrap_err().code,
+            guard_url("https://localhost/a.mp4", &direct_proxy())
+                .await
+                .unwrap_err()
+                .code,
             "URL_PRIVATE"
         );
         assert_eq!(
-            guard_url("https://192.168.1.1/a.mp4").await.unwrap_err().code,
+            guard_url("https://192.168.1.1/a.mp4", &direct_proxy())
+                .await
+                .unwrap_err()
+                .code,
             "URL_PRIVATE"
         );
     }
 
     #[tokio::test]
     async fn 守卫允许公网字面量() {
-        assert!(guard_url("https://8.8.8.8/a.mp4").await.is_ok());
+        assert!(guard_url("https://8.8.8.8/a.mp4", &direct_proxy())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn 代理生效时字面内网地址与内网主机名照拦不误() {
+        // 跳过 DNS 复校只针对「域名解析」这一步，其余判定不受影响
+        for blocked in [
+            "https://127.0.0.1/a.mp4",
+            "https://192.168.1.1/a.mp4",
+            "https://169.254.1.1/a.mp4",
+            "https://localhost/a.mp4",
+            "https://nas.local/a.mp4",
+            "https://git.internal/a.mp4",
+            "http://example.com/a.mp4",
+        ] {
+            let err = guard_url(blocked, &active_proxy()).await.unwrap_err();
+            assert!(
+                matches!(err.code.as_str(), "URL_PRIVATE" | "URL_SCHEME"),
+                "{blocked} 有代理时也该被拦，实际 {}",
+                err.code
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn 代理生效时公网域名不再被本机解析结果拦下() {
+        // 污染网络下 x.com 在本机解析为 127.0.0.1，此前会被判成「内网地址」。
+        // 代理生效时域名由代理端解析，这一步不该再拦。
+        let url = guard_url("https://x.com/u/status/1", &active_proxy()).await;
+        assert!(url.is_ok(), "有代理时不该因本机 DNS 结果被拦：{url:?}");
+        assert_eq!(url.unwrap().host_str(), Some("x.com"));
+    }
+
+    #[test]
+    fn 解析结果含内网地址按域名污染处理() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // 任一地址落在内网就拒绝：公网 + 内网混合时同样不能放过。
+        // 注意错误码是 NETWORK_DNS_POLLUTED 而不是 URL_PRIVATE——链接本身是公网域名，
+        // 是本机 DNS 给出了内网答案，解决办法（开代理）完全不同。
+        assert_eq!(
+            check_resolved("x.com", &[ip("8.8.8.8"), ip("10.0.0.1")])
+                .unwrap_err()
+                .code,
+            "NETWORK_DNS_POLLUTED"
+        );
+        assert_eq!(
+            check_resolved("x.com", &[ip("127.0.0.1")]).unwrap_err().code,
+            "NETWORK_DNS_POLLUTED"
+        );
+        assert_eq!(
+            check_resolved("x.com", &[ip("::1")]).unwrap_err().code,
+            "NETWORK_DNS_POLLUTED"
+        );
+        // 全是公网地址才放行
+        assert!(check_resolved("x.com", &[ip("8.8.8.8"), ip("1.1.1.1")]).is_ok());
+    }
+
+    #[test]
+    fn 解析不出地址按域名不可用处理() {
+        assert_eq!(
+            check_resolved("x.com", &[]).unwrap_err().code,
+            "NETWORK_ERROR",
+            "解析结果为空是网络问题，不是内网地址"
+        );
     }
 }

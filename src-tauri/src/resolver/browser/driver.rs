@@ -56,6 +56,17 @@ const NAVIGATION_GAP: Duration = Duration::from_millis(150);
 /// 不涉及任何反检测手段——页面在真实 WebView2 里正常加载。
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI --disable-notifications";
 
+/// 内嵌浏览器的启动参数（拼上当前出口的代理开关）。
+///
+/// WebView2 的启动参数在**环境创建时定型**，且环境按 `data_directory` 复用，
+/// 所以两个窗口（解析窗口与登录窗口）必须传同一套参数，改代理后要重开窗口才生效。
+pub(crate) fn browser_args(proxy_arg: Option<&str>) -> String {
+    match proxy_arg.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(arg) => format!("{BROWSER_ARGS} {arg}"),
+        None => BROWSER_ARGS.to_string(),
+    }
+}
+
 /// Tick 间隔：在等 channel 的同时留出响应取消的粒度
 const TICK: Duration = Duration::from_millis(120);
 
@@ -78,7 +89,7 @@ pub fn profile_dir() -> &'static str {
 /// 账户登录导出 Cookie 时用：Cookie 存在 profile 里，只要该 profile 下有任一
 /// 窗口即可读出，不必关心它是解析窗口还是登录窗口。
 pub fn ensure_profile_window(app: &AppHandle) -> AppResult<()> {
-    BrowserResolver::new().ensure_window(app)
+    BrowserResolver::new().ensure_window(app, None)
 }
 
 /// 驱动一个解析窗口，返回注入脚本抓到的媒体载荷。
@@ -104,17 +115,21 @@ impl BrowserResolver {
     /// 打开（或复用）解析窗口，等待页面把媒体数据回传。
     ///
     /// 窗口先隐藏；`HIDDEN_WAIT` 内没拿到就显形让用户能看到验证码，再等 `VISIBLE_WAIT`。
+    ///
+    /// `proxy_arg` 是当前出口对应的 Chromium 代理参数（见 `net::proxy::browser_proxy_arg`）：
+    /// 窗口已存在时不会改参数（WebView2 环境在创建时定型），由调用方在代理变化时关窗重建。
     pub async fn capture(
         &self,
         app: &AppHandle,
         page_url: &url::Url,
         token: Option<Arc<crate::downloader::ControlToken>>,
+        proxy_arg: Option<&str>,
     ) -> AppResult<CapturePayload> {
         // 同一时刻只解析一个链接：窗口是单例，并发会互相串数据
         let _guard = self.gate.lock().await;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        self.ensure_window(app)?;
+        self.ensure_window(app, proxy_arg)?;
         // 每轮把回传通道换成这一轮的：窗口复用时循环体不会重新绑定闭包
         *self.pending.lock().expect("pending 锁不可中毒") = Some(tx);
 
@@ -182,7 +197,7 @@ impl BrowserResolver {
     }
 
     /// 取（或懒创建）解析窗口
-    pub(crate) fn ensure_window(&self, app: &AppHandle) -> AppResult<()> {
+    pub(crate) fn ensure_window(&self, app: &AppHandle, proxy_arg: Option<&str>) -> AppResult<()> {
         if app.get_webview_window(WINDOW_LABEL).is_some() {
             return Ok(());
         }
@@ -202,7 +217,7 @@ impl BrowserResolver {
         .visible(false)
         .center()
         .data_directory(data_dir)
-        .additional_browser_args(BROWSER_ARGS)
+        .additional_browser_args(&browser_args(proxy_arg))
         .initialization_script(include_str!("hook.js"))
         .on_navigation(move |url| {
             // 只有哨兵地址才拦：其余一律放行，否则会挡掉抖音自身的重定向

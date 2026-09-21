@@ -1,6 +1,6 @@
 [package]
 name = "videoflow"
-version = "1.0.0"
+version = "1.1.0"
 description = "VideoFlow - 液态玻璃桌面视频下载器"
 authors = ["VideoFlow"]
 edition = "2021"
@@ -56,7 +56,20 @@ tokio = { version = "1", features = [
 ] }
 
 # 使用 native-tls（Windows 走 schannel），避免引入 rustls 带来的大量编译开销
-reqwest = { version = "0.12", features = ["stream", "json"] }
+#
+# 不要加 default-features = false：默认特性里的 `system-proxy` 让 reqwest 跟随
+# Windows 的「系统代理」（hyper-util 读 HKCU 的 Internet Settings）。
+# `socks` 是空特性（reqwest-0.12.28 Cargo.toml:173），SOCKS 连接器在 hyper-util
+# 里、而 reqwest 无条件启用了 hyper-util/client-proxy，所以加它不新增任何 crate，
+# 但必须加：socks5/socks5h 的分派在 reqwest 内是 #[cfg(feature = "socks")] 门控的。
+reqwest = { version = "0.12", features = ["stream", "json", "socks"] }
+
+# 读「系统代理」开关：与 reqwest 的 system-proxy 探测看的是同一处注册表，
+# 用于判断解析前的 DNS 复校是否还有意义（见 platform::system_proxy_enabled）。
+# 该 crate 本就随 reqwest → hyper-util 编进二进制，这里只是提为直接依赖，
+# 不新增任何下载与编译量。
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
 
 # 开发调试用
 #

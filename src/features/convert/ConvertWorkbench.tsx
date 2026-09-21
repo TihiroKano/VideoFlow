@@ -14,9 +14,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GlassSelect } from "@/components/controls/GlassSelect";
 import { GlassSurface } from "@/components/glass/GlassSurface";
 import {
-  IconChevronDown,
   IconClose,
   IconConvert,
   IconFolder,
@@ -334,26 +334,14 @@ export function ConvertWorkbench(): React.JSX.Element {
       <label className="vf-field-label" htmlFor={id}>
         {label}
       </label>
-      <GlassSurface variant="control" className="vf-select" tint={0.32} opacity={0.7}>
-        <span className="vf-select__value vf-truncate">{display}</span>
-        <span className="vf-select__chevron">
-          <IconChevronDown size={18} />
-        </span>
-        <select
-          id={id}
-          className="vf-select__native"
-          value={value}
-          disabled={disabled || options.length === 0}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          {options.map((o) => (
-            // 不可用的路径（本机没这个硬件编码器）在这里置灰、选不中
-            <option key={o.key} value={o.key} disabled={o.disabled}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </GlassSurface>
+      <GlassSelect
+        id={id}
+        value={value}
+        display={display}
+        options={options}
+        onChange={onChange}
+        disabled={disabled || options.length === 0}
+      />
     </div>
   );
 

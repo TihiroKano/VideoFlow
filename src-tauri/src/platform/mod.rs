@@ -1,4 +1,6 @@
 //! 平台能力：打开文件、定位目录、回收站删除、外部工具定位。
+//!
+//! 网络出口（代理探测等）已迁到 `crate::net`：那里是出口的唯一真相源。
 
 pub mod browser;
 pub mod sidecar;
@@ -9,14 +11,14 @@ use std::process::Command;
 use crate::error::{AppError, AppResult};
 
 #[cfg(windows)]
-fn no_window(cmd: &mut Command) -> &mut Command {
+pub(crate) fn no_window(cmd: &mut Command) -> &mut Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW)
 }
 
 #[cfg(not(windows))]
-fn no_window(cmd: &mut Command) -> &mut Command {
+pub(crate) fn no_window(cmd: &mut Command) -> &mut Command {
     cmd
 }
 

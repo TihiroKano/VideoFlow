@@ -94,6 +94,23 @@ export function App(): React.JSX.Element {
       // 先把本地设置同步给主进程，再拉取任务快照
       await syncSettingsToBackend();
 
+      // 网络诊断：启动时跑一次（最坏 5 秒出头，异步不阻塞界面），结果缓存进设置页。
+      // 只在「当前出口配置有问题」时提醒——直连用户不该每次启动都被唠叨，
+      // 真正解析失败时后端还会给出完整指引。
+      void useSettingsStore
+        .getState()
+        .refreshNetwork()
+        .then((diagnostics) => {
+          if (!diagnostics || diagnostics.proxyOk) return;
+          pushToast({
+            level: "warning",
+            message: diagnostics.verdict,
+            detail: "可在「设置 → 网络与代理」里重新检测或切换出口",
+            persistent: false,
+          });
+        })
+        .catch(() => undefined);
+
       // 链接历史：一次会话拉一次即可，之后由 store 自己维护
       void useHistoryStore.getState().refresh();
 

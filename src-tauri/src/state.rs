@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::core::model::{
@@ -20,6 +20,7 @@ use crate::downloader::http::{self, ProgressSnapshot};
 use crate::downloader::{ytdlp as ytdlp_dl, ControlState, ControlToken, SpeedMeter};
 use crate::error::{AppError, AppResult};
 use crate::media;
+use crate::net::{self, ClientSpec, ProxyConfig, ProxyMode, ProxyPolicy};
 use crate::storage;
 
 /// 事件合并节流：每任务最多 4 次/秒（项目书 §3.4）
@@ -53,6 +54,15 @@ pub struct Settings {
     /// 这里用的是用户自己账号本就有的权限，不是绕过访问控制。
     #[serde(default)]
     pub cookies_source: String,
+    /// 网络出口模式：`direct`（直连）/ `system`（跟随系统代理）/ `custom`（自定义代理）。
+    ///
+    /// 默认 `system`：reqwest 与 yt-dlp 本来就会跟随系统代理，默认值必须保持这一行为，
+    /// 否则现有用户会突然变成直连。
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: String,
+    /// 自定义代理地址（含 scheme），如 `http://127.0.0.1:7890`、`socks5h://127.0.0.1:1080`
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 impl Default for Settings {
@@ -64,6 +74,8 @@ impl Default for Settings {
             per_host_concurrency: default_per_host(),
             device_tier: String::new(),
             cookies_source: String::new(),
+            proxy_mode: default_proxy_mode(),
+            proxy_url: String::new(),
         }
     }
 }
@@ -71,6 +83,11 @@ impl Default for Settings {
 /// 同一来源并发上限的默认值（项目书 §3.2：避免触发服务端限流）
 fn default_per_host() -> u32 {
     2
+}
+
+/// 网络出口的默认模式（跟随系统代理）
+fn default_proxy_mode() -> String {
+    crate::net::proxy::DEFAULT_PROXY_MODE.to_string()
 }
 
 /// 实际生效的下载并发（项目书 §3.2）
@@ -108,9 +125,44 @@ struct Inner {
     controls: HashMap<String, Arc<ControlToken>>,
 }
 
+/// 一个 HTTP 客户端 + 建它时用的出口。
+///
+/// reqwest 的客户端是不可变的，代理只能建库时指定，所以出口变化时整只重建；
+/// 记下当时的 `policy` 就能在下次取用时发现变化（系统代理是应用外部状态，
+/// 不能在启动时缓存一次了事）。
+struct ClientSlot {
+    client: reqwest::Client,
+    policy: ProxyPolicy,
+}
+
+impl ClientSlot {
+    fn build(cfg: &ProxyConfig, spec: ClientSpec) -> Self {
+        let policy = cfg.policy();
+        match net::build_client(cfg, &spec) {
+            Ok(client) => Self { client, policy },
+            Err(e) => {
+                // 绝不能因为 settings.json 里写坏一个代理串就让应用起不来
+                eprintln!("[videoflow] 构建 HTTP 客户端失败（{e}），本次按直连处理");
+                let direct = ProxyConfig {
+                    mode: ProxyMode::Direct,
+                    custom_url: String::new(),
+                };
+                let client = net::build_client(&direct, &spec).expect("直连客户端必定可建");
+                Self {
+                    client,
+                    policy: ProxyPolicy::Direct,
+                }
+            }
+        }
+    }
+}
+
 pub struct AppState {
     pub app: AppHandle,
-    pub client: reqwest::Client,
+    /// 主客户端（下载用，总超时长）
+    client: Mutex<ClientSlot>,
+    /// 短超时客户端（XDown 兜底用），出口与主客户端一致
+    short_client: Mutex<ClientSlot>,
     inner: Mutex<Inner>,
     settings: Mutex<Settings>,
     seq: AtomicU64,
@@ -131,19 +183,14 @@ pub struct AppState {
 impl AppState {
     pub fn new(app: AppHandle) -> Arc<Self> {
         let settings = load_settings();
-        let client = reqwest::Client::builder()
-            .user_agent("VideoFlow/0.1 (Windows)")
-            .connect_timeout(std::time::Duration::from_secs(20))
-            .timeout(std::time::Duration::from_secs(600))
-            .pool_max_idle_per_host(8)
-            .build()
-            .expect("构建 HTTP 客户端失败");
+        let proxy = ProxyConfig::from_settings(&settings.proxy_mode, &settings.proxy_url);
 
         let slots = Arc::new(Semaphore::new(settings.max_concurrent.max(1) as usize));
 
         let state = Arc::new(Self {
             app,
-            client,
+            client: Mutex::new(ClientSlot::build(&proxy, ClientSpec::main())),
+            short_client: Mutex::new(ClientSlot::build(&proxy, ClientSpec::short())),
             inner: Mutex::new(Inner {
                 tasks: HashMap::new(),
                 resolved: HashMap::new(),
@@ -163,6 +210,45 @@ impl AppState {
         state
     }
 
+    // ---- 网络出口 ----
+
+    /// 当前网络出口（来自设置）
+    pub fn proxy_config(&self) -> ProxyConfig {
+        let s = self.settings();
+        ProxyConfig::from_settings(&s.proxy_mode, &s.proxy_url)
+    }
+
+    /// 主客户端（下载用）。出口变化时自动重建，调用方拿到的永远是最新出口的客户端。
+    pub fn client(&self) -> reqwest::Client {
+        self.slot_client(&self.client, ClientSpec::main)
+    }
+
+    /// 短超时客户端（XDown 兜底用）
+    pub fn short_client(&self) -> reqwest::Client {
+        self.slot_client(&self.short_client, ClientSpec::short)
+    }
+
+    /// 内嵌浏览器（WebView2）当前出口对应的启动参数
+    pub fn browser_proxy_arg(&self) -> Option<String> {
+        crate::net::proxy::browser_proxy_arg(&self.proxy_config())
+    }
+
+    fn slot_client(
+        &self,
+        slot: &Mutex<ClientSlot>,
+        spec: impl Fn() -> ClientSpec,
+    ) -> reqwest::Client {
+        let cfg = self.proxy_config();
+        let policy = cfg.policy();
+        // 只克隆（reqwest::Client 内部是 Arc），绝不跨 await 持锁
+        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.policy != policy {
+            eprintln!("[videoflow] 网络出口变化（{} → {}），重建 HTTP 客户端", describe_policy(&guard.policy), describe_policy(&policy));
+            *guard = ClientSlot::build(&cfg, spec());
+        }
+        guard.client.clone()
+    }
+
     pub fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::SeqCst)
     }
@@ -175,7 +261,10 @@ impl AppState {
         page_url: &url::Url,
         token: Option<Arc<ControlToken>>,
     ) -> AppResult<crate::resolver::browser::CapturePayload> {
-        self.browser.capture(&self.app, page_url, token).await
+        let proxy_arg = self.browser_proxy_arg();
+        self.browser
+            .capture(&self.app, page_url, token, proxy_arg.as_deref())
+            .await
     }
 
     pub fn settings(&self) -> Settings {
@@ -217,6 +306,7 @@ impl AppState {
     }
 
     pub fn update_settings(&self, patch: SettingsPatch) {
+        let mut proxy_changed = false;
         if let Ok(mut s) = self.settings.lock() {
             if let Some(dir) = patch.download_dir {
                 if !dir.trim().is_empty() {
@@ -240,9 +330,38 @@ impl AppState {
             if let Some(source) = patch.cookies_source {
                 s.cookies_source = source.trim().to_string();
             }
+            if let Some(mode) = patch.proxy_mode {
+                let mode = mode.trim().to_ascii_lowercase();
+                // 取值非法时保留原值，不把设置写坏
+                if crate::net::ProxyMode::parse(&mode).is_some() && s.proxy_mode != mode {
+                    s.proxy_mode = mode;
+                    proxy_changed = true;
+                }
+            }
+            if let Some(url) = patch.proxy_url {
+                let url = url.trim().to_string();
+                if s.proxy_url != url {
+                    s.proxy_url = url;
+                    proxy_changed = true;
+                }
+            }
             save_settings(&s);
         }
+        if proxy_changed {
+            // 客户端由 slot_client 在下次取用时按新出口重建；
+            // 但 WebView2 的启动参数在环境创建时定型，只能关掉窗口让它重建
+            self.invalidate_browser_window();
+        }
         self.wake.notify_waiters();
+    }
+
+    /// 关闭浏览器解析窗口：出口变化后必须重建，否则仍用旧代理参数
+    fn invalidate_browser_window(&self) {
+        let label = crate::resolver::browser::driver::window_label();
+        if let Some(window) = self.app.get_webview_window(label) {
+            let _ = window.close();
+            eprintln!("[videoflow] 网络出口已变化，浏览器解析窗口已关闭，下次解析会按新出口重建");
+        }
     }
 
     /// 实际生效的下载并发上限（项目书 §3.2）。
@@ -788,8 +907,9 @@ impl AppState {
         });
 
         // 需要合并时先下视频流，再下音频流，最后交给 FFmpeg
+        let client = self.client();
         let outcome =
-            http::download(&self.client, req, Arc::clone(&token), on_progress).await?;
+            http::download(&client, req, Arc::clone(&token), on_progress).await?;
 
         if token.state() == ControlState::Pause {
             let checkpoint = outcome.checkpoint.clone();
@@ -873,6 +993,8 @@ impl AppState {
             target_path: PathBuf::from(&target),
             referer: task.referer.clone(),
             cookies_source: self.cookies_source(),
+            // 下载走与解析同一个出口
+            proxy: crate::resolver::ytdlp::YtDlpProxy::from_config(&self.proxy_config()),
         };
 
         let on_progress = Arc::new(move |snapshot: ProgressSnapshot| {
@@ -936,16 +1058,27 @@ impl AppState {
         let should_cancel: Box<dyn Fn() -> bool + Send + Sync> =
             Box::new(move || cancel_token.state() == ControlState::Cancel);
 
+        // 出口：FFmpeg 只认 http/https 代理，SOCKS 出口下这里拿不到参数
+        let proxy_cfg = self.proxy_config();
+        let hls_proxy = crate::net::hls_proxy_arg(&proxy_cfg);
+        let socks_hint = crate::net::hls_socks_hint(&proxy_cfg);
+
         media::hls_to_mp4(
             &playlist,
             task.referer.as_deref(),
+            hls_proxy.as_deref(),
             task.duration_sec,
             task.total_bytes,
             &part,
             on_progress,
             should_cancel,
         )
-        .await?;
+        .await
+        .map_err(|err| match socks_hint {
+            // SOCKS 出口 + 网络类失败：多半就是「FFmpeg 用不了这个代理」，说清楚
+            Some(hint) if crate::net::is_network_error(&err) => err.with_hint(hint),
+            _ => err,
+        })?;
 
         // 原子 rename：与原生引擎一致，完成才成为最终文件
         if let Err(e) = std::fs::rename(&part, &target_path) {
@@ -1080,6 +1213,19 @@ pub struct SettingsPatch {
     pub per_host_concurrency: Option<u32>,
     pub device_tier: Option<String>,
     pub cookies_source: Option<String>,
+    /// `direct` / `system` / `custom`
+    pub proxy_mode: Option<String>,
+    /// 自定义代理地址（含 scheme）
+    pub proxy_url: Option<String>,
+}
+
+/// 出口策略的可读描述（只在日志里用）
+fn describe_policy(policy: &ProxyPolicy) -> &'static str {
+    match policy {
+        ProxyPolicy::Direct => "直连",
+        ProxyPolicy::System => "系统代理",
+        ProxyPolicy::Explicit(_) => "自定义代理",
+    }
 }
 
 enum Outcome {

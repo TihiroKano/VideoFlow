@@ -29,20 +29,88 @@ pub struct SnapshotPayload {
 ///
 /// `resolver` 模块本身不依赖 Tauri，但 Browser Resolver 必须开内嵌浏览器窗口，
 /// 所以派发放在这一层：先做 SSRF 防护与 Provider 判定，再决定走哪条路。
+///
+/// 网络出口来自设置（`AppState::proxy_config`），下面所有链路共用它。
 pub async fn resolve_media(
     state: &AppState,
     url: &str,
     token: Option<Arc<crate::downloader::ControlToken>>,
 ) -> AppResult<crate::core::model::ResolvedMedia> {
+    use crate::net::{self, XFailureContext};
     use crate::resolver::{classify, should_fallback_to_browser, ProviderKind};
 
-    let (parsed, kind) = classify(url).await?;
+    let proxy = state.proxy_config();
+    let (parsed, kind) = classify(url, &proxy).await?;
     match kind {
         ProviderKind::Browser => capture_with_browser(state, &parsed, token).await,
         _ => {
             let cookies = state.cookies_source();
-            match crate::resolver::resolve(&state.client, url, cookies.as_deref()).await {
+            let client = state.client();
+            match crate::resolver::resolve(&client, url, cookies.as_deref(), &proxy).await {
                 Ok(media) => Ok(media),
+                // X 链接的专项兜底：yt-dlp 失败后先试 XDown（不依赖登录态，
+                // 只取 video.twimg.com 原始 MP4）。它也不成时，再按原有规则
+                // 退回内嵌浏览器；其它站点完全不走这里。
+                Err(err) if crate::resolver::xdown::is_x_url(&parsed) => {
+                    eprintln!(
+                        "[videoflow] yt-dlp 解析 X 链接失败（{}），改用 XDown 兜底：host={}",
+                        err.code,
+                        parsed.host_str().unwrap_or("unknown")
+                    );
+
+                    // 网络类失败先探测一次：不通就直接给出「网络/代理」结论，
+                    // 不必再白跑 XDown 与浏览器，更不能把网络问题伪装成解析器错误
+                    let target = net::is_network_error(&err)
+                        .then(|| net::diag::probe_target(&proxy));
+                    let target = match target {
+                        Some(fut) => Some(fut.await),
+                        None => None,
+                    };
+                    let active_proxy = proxy.redacted();
+                    if let Some(probe) = &target {
+                        if !probe.available {
+                            let endpoint = net::diag::probe_proxy_endpoint(&proxy).await;
+                            return Err(net::classify_x_failure(
+                                &err,
+                                None,
+                                &XFailureContext {
+                                    target: Some(probe),
+                                    proxy_endpoint: endpoint.as_ref(),
+                                    active_proxy: active_proxy.as_deref(),
+                                },
+                            ));
+                        }
+                    }
+
+                    let short_client = state.short_client();
+                    match crate::resolver::xdown::resolve(&short_client, &parsed).await {
+                        Ok(media) => Ok(media),
+                        Err(xdown_err) => {
+                            eprintln!(
+                                "[videoflow] XDown 兜底也失败（{}）：host={}",
+                                xdown_err.code,
+                                parsed.host_str().unwrap_or("unknown")
+                            );
+                            // 两条链路都失败：合成一个能区分「网络不可达 / 代理不可用 /
+                            // 解析器失败」的错误，并把两边的原因都留下
+                            let endpoint = net::diag::probe_proxy_endpoint(&proxy).await;
+                            let failure = net::classify_x_failure(
+                                &err,
+                                Some(&xdown_err),
+                                &XFailureContext {
+                                    target: target.as_ref(),
+                                    proxy_endpoint: endpoint.as_ref(),
+                                    active_proxy: active_proxy.as_deref(),
+                                },
+                            );
+                            if should_fallback_to_browser(url, &err) {
+                                capture_with_browser(state, &parsed, token).await
+                            } else {
+                                Err(failure)
+                            }
+                        }
+                    }
+                }
                 // 保险：站点在表内且属于「yt-dlp 处理不了」类错误时，改用内嵌浏览器重试。
                 // 表外的站点不兜底，避免把陌生网页加载进内嵌浏览器。
                 Err(err) if should_fallback_to_browser(url, &err) => {
@@ -164,4 +232,15 @@ pub async fn sidecar_status() -> crate::platform::sidecar::SidecarStatus {
                 ffmpeg: crate::platform::sidecar::ToolStatus::missing(),
             }
         })
+}
+
+/// 网络诊断：分别测本机 DNS、直连、系统代理、自定义代理能不能访问 X。
+///
+/// 启动时跑一次并缓存到前端，用户点「重新检测」再跑一次。三条路径并发探测、
+/// 每条 5s 上限，最坏也就 5s 出头；用的是异步命令，不占 UI 线程。
+#[tauri::command]
+pub async fn network_diagnostics(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::net::NetworkDiagnostics> {
+    Ok(crate::net::diag::diagnose(&state.proxy_config()).await)
 }

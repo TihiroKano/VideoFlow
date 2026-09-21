@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use videoflow_lib::downloader::http::{self, ProgressSnapshot};
 use videoflow_lib::downloader::ControlToken;
+use videoflow_lib::net::proxy::{ProxyConfig, ProxyMode};
 use videoflow_lib::{resolver, storage};
 
 /// 公开可用的直链样本，支持 Range
@@ -23,10 +24,22 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// 测试出口：设了 `VF_TEST_PROXY` 就走它，否则直连（与 proxy_live 一致）
+fn proxy_config() -> ProxyConfig {
+    match std::env::var("VF_TEST_PROXY") {
+        Ok(url) if !url.trim().is_empty() => ProxyConfig {
+            mode: ProxyMode::Custom,
+            custom_url: url,
+        },
+        _ => ProxyConfig {
+            mode: ProxyMode::Direct,
+            custom_url: String::new(),
+        },
+    }
+}
+
 fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent("VideoFlow/0.1 (test)")
-        .build()
+    videoflow_lib::net::build_client(&proxy_config(), &videoflow_lib::net::ClientSpec::short())
         .expect("构建 HTTP 客户端失败")
 }
 
@@ -37,7 +50,7 @@ async fn 直链从解析到落盘完整跑通() {
     let client = client();
 
     // ---- 1. 解析 ----
-    let media = resolver::resolve(&client, DIRECT_MP4, None)
+    let media = resolver::resolve(&client, DIRECT_MP4, None, &proxy_config())
         .await
         .expect("解析直链应当成功");
 
@@ -167,6 +180,7 @@ async fn 站点链接可解析出可用清晰度() {
         &client,
         "https://www.bilibili.com/video/BV1GJ411x7h7",
         None,
+        &proxy_config(),
     )
     .await
     {

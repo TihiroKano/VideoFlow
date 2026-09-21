@@ -112,12 +112,14 @@ pub fn remux_to_mp4(input: &Path, out: &Path) -> AppResult<()> {
 /// segment 它都原生处理，自己重写一遍只会引入偏差（离线环境也没有 AES 相关 crate）。
 ///
 /// - `referer`：需要校验来源的源（部分 HLS 源要求）
+/// - `proxy`：出口代理，仅接受 http/https（FFmpeg 的 `-http_proxy` 不支持 SOCKS）
 /// - `duration_sec` + `total_bytes`：两者都有时按时间比例推进度；否则只报总时长
 /// - `on_progress` 收到 (已下载字节估算, 总字节估算)
 /// - `should_cancel` 返回 true 时杀掉 FFmpeg 进程
 pub async fn hls_to_mp4(
     playlist_url: &str,
     referer: Option<&str>,
+    proxy: Option<&str>,
     duration_sec: Option<f64>,
     total_bytes: Option<u64>,
     out: &Path,
@@ -138,6 +140,11 @@ pub async fn hls_to_mp4(
         "-nostats".into(),
         "-y".into(),
     ];
+    if let Some(proxy) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+        // 该选项属于 http 协议，https 协议继承同一套选项，所以一条就够
+        args.push("-http_proxy".into());
+        args.push(proxy.to_string());
+    }
     if let Some(referer) = referer.map(str::trim).filter(|r| !r.is_empty()) {
         // 该参数是单个字符串，多个头之间用 \r\n 分隔
         args.push("-headers".into());

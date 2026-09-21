@@ -279,17 +279,118 @@
   pointer-events: none;
 }
 
-/* 原生 select 覆盖在自定义外观之上，保证键盘与读屏可用 */
-.vf-select__native {
+/* 透明触发按钮铺满外壳：键盘与读屏语义在它身上，视觉由外壳与弹层负责 */
+.vf-select__trigger {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0;
-  cursor: pointer;
-  appearance: none;
-  border: none;
+  padding: 0;
   background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: inherit;
+}
+
+.vf-select__trigger:focus-visible {
+  outline: 2px solid var(--vf-accent);
+  outline-offset: -2px;
+}
+
+.vf-select:has(.vf-select__trigger:disabled) {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vf-select__chevron--open {
+  transform: translateY(-50%) rotate(180deg);
+}
+
+/* 自绘玻璃弹层：portal 到 body，fixed 定位由组件写入 style */
+.vf-select__popup {
+  position: fixed;
+  z-index: 80;
+  overflow: hidden;
+  animation: vf-select-pop var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-select__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  overflow-y: auto;
+  /*
+   * 磨砂背板：WebGL 档的玻璃画布在 DOM 之下，弹层自身透明时会透出底层页面文字；
+   * 这里给列表一块半透明深蓝底并磨砂，与提示条同一套观感，保证选项可读。
+   */
+  background: rgb(8 38 70 / 78%);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+html[data-vf-contrast="high"] .vf-select__list {
+  background: var(--vf-bg-deep);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.vf-select__option {
+  /* 列表超高滚动时 flex 子项默认会被压缩，选项文字会叠行 */
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 14px;
+  color: var(--vf-text);
+  cursor: pointer;
+  transition: background var(--vf-dur-fast) var(--vf-ease);
+}
+
+.vf-select__option[data-highlighted="true"] {
+  background: rgb(255 255 255 / 12%);
+}
+
+.vf-select__option[aria-selected="true"] {
+  background: var(--vf-accent-strong);
+  color: #ffffff;
+}
+
+.vf-select__option[aria-disabled="true"] {
+  color: var(--vf-text-faint);
+  cursor: default;
+}
+
+@keyframes vf-select-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+html[data-vf-reduced-motion="true"] .vf-select__popup {
+  animation: none;
+}
+
+/* 设置页行内紧凑尺寸 */
+.vf-select--compact {
+  height: 34px;
+  min-width: 172px;
+  padding: 0 30px 0 12px;
+  font-size: 13px;
+}
+
+.vf-select--compact .vf-select__value {
+  font-size: 13px;
+}
+
+.vf-select--compact .vf-select__chevron {
+  right: 10px;
 }
 
 /* ---- 表单字段标签 ---- */

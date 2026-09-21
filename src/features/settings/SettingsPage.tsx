@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { GlassSelect } from "@/components/controls/GlassSelect";
 import { GlassSurface } from "@/components/glass/GlassSurface";
 import { IconFolder } from "@/components/icons";
 import {
@@ -17,8 +18,16 @@ import {
   sidecarStatus,
   type AccountSiteStatus,
   type CookieSourceStatus,
+  type NetworkPathProbe,
 } from "@/services/ipc";
 import { profileDevice, type GlassTier } from "@/services/deviceProfile";
+import {
+  PROXY_MODES,
+  PROXY_TYPES,
+  validateProxyHost,
+  type ProxyMode,
+  type ProxyType,
+} from "@/features/settings/proxyConfig";
 import { useSettingsStore, type TierChoice } from "@/stores/settingsStore";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -54,6 +63,13 @@ const COOKIE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 type CookieTone = "ok" | "warn" | "muted";
+
+/** 一条出口探测结果的显示文本（没结果时给「—」，不让界面出现空白格） */
+function probeText(probe: NetworkPathProbe | null | undefined): string {
+  if (!probe) return "—";
+  const latency = probe.latencyMs ? ` · ${probe.latencyMs} ms` : "";
+  return `${probe.available ? "可用" : "不可用"}：${probe.detail}${latency}`;
+}
 
 /**
  * 把诊断结果翻译成一句「现在能不能用」。
@@ -112,6 +128,29 @@ export function SettingsPage(): React.JSX.Element {
   /** 正在登录的站点 key；非空时禁用该行按钮 */
   const [loggingIn, setLoggingIn] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /** 代理地址的输入草稿：只在失焦/回车时提交，避免每敲一个字就打一次 IPC */
+  const [proxyHostDraft, setProxyHostDraft] = useState(s.proxyHost);
+
+  useEffect(() => {
+    setProxyHostDraft(s.proxyHost);
+  }, [s.proxyHost]);
+
+  const proxyHostError = proxyHostDraft.trim() ? validateProxyHost(proxyHostDraft) : null;
+
+  const commitProxyHost = useCallback(() => {
+    const value = proxyHostDraft.trim();
+    if (value && value !== s.proxyHost) s.setProxyHost(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proxyHostDraft, s.proxyHost]);
+
+  // 诊断结论的色调：可达=ok；当前出口有问题=warn；其余（未检测/直连不通但不算配置问题）=muted
+  const networkTone: CookieTone = !s.network
+    ? "muted"
+    : s.network.xReachable
+      ? "ok"
+      : s.network.proxyOk
+        ? "muted"
+        : "warn";
 
   useEffect(() => {
     if (s.profile || s.profiling) return;
@@ -472,25 +511,20 @@ export function SettingsPage(): React.JSX.Element {
                   </span>
                 </div>
                 <div className="vf-settings__row-control">
-                  <select
-                    className="vf-settings__select"
+                  <GlassSelect
+                    compact
                     value={cookiesChoice}
-                    aria-label="登录状态来源"
-                    onChange={(e) => {
-                      const value = e.target.value;
+                    ariaLabel="登录状态来源"
+                    display={COOKIE_OPTIONS.find((o) => o.value === cookiesChoice)?.label}
+                    options={COOKIE_OPTIONS.map((o) => ({ key: o.value, label: o.label }))}
+                    onChange={(value) => {
                       if (value === "file:") {
                         void chooseCookiesFile();
                         return;
                       }
                       s.setCookiesSource(value);
                     }}
-                  >
-                    {COOKIE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
+                  />
                   {cookiesFile ? (
                     <button
                       type="button"
@@ -506,6 +540,136 @@ export function SettingsPage(): React.JSX.Element {
               </div>
             ) : null}
           </div>
+        </section>
+
+        <section className="vf-settings__group" aria-labelledby="vf-set-network">
+          <h2 id="vf-set-network" className="vf-settings__group-title">
+            网络与代理
+          </h2>
+
+          <div className="vf-settings__row vf-settings__row--stack">
+            <div className="vf-settings__row-label">
+              <span>出口模式</span>
+              <span className="vf-settings__row-hint">
+                决定 VideoFlow 怎么访问站点：解析、下载、XDown 兜底与 yt-dlp 都走这里选定的出口。
+                改完立即生效（浏览器解析窗口会在下次解析时重建）
+              </span>
+            </div>
+            <div className="vf-settings__row-control">
+              <GlassSelect
+                compact
+                value={s.proxyMode}
+                ariaLabel="网络出口模式"
+                options={PROXY_MODES.map((m) => ({ key: m.value, label: m.label }))}
+                onChange={(v) => s.setProxyMode(v as ProxyMode)}
+              />
+            </div>
+          </div>
+
+          {s.proxyMode === "custom" ? (
+            <div className="vf-settings__row vf-settings__row--stack">
+              <div className="vf-settings__row-label">
+                <span>代理地址</span>
+                <span className="vf-settings__row-hint">
+                  {PROXY_TYPES.find((t) => t.value === s.proxyType)?.hint ?? ""}
+                </span>
+              </div>
+              <div className="vf-settings__row-control">
+                <GlassSelect
+                  compact
+                  value={s.proxyType}
+                  ariaLabel="代理类型"
+                  options={PROXY_TYPES.map((t) => ({ key: t.value, label: t.label }))}
+                  onChange={(v) => s.setProxyType(v as ProxyType)}
+                />
+                <input
+                  className={`vf-settings__input${proxyHostError ? " vf-settings__input--invalid" : ""}`}
+                  value={proxyHostDraft}
+                  aria-label="代理主机与端口"
+                  placeholder="127.0.0.1:7890"
+                  spellCheck={false}
+                  onChange={(e) => setProxyHostDraft(e.target.value)}
+                  onBlur={commitProxyHost}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitProxyHost();
+                  }}
+                />
+              </div>
+              {proxyHostError ? (
+                <span className="vf-settings__cookie-desc vf-settings__cookie-desc--warn">
+                  {proxyHostError}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="vf-settings__row vf-settings__row--stack">
+            <div className="vf-settings__row-label">
+              <span>网络诊断</span>
+              <span className="vf-settings__row-hint">
+                分别测本机 DNS、直连、系统代理与自定义代理能不能访问 X
+              </span>
+            </div>
+            <div className="vf-settings__row-control">
+              <span className={`vf-settings__cookie-desc vf-settings__cookie-desc--${networkTone}`}>
+                {s.networkProbing ? "检测中…" : (s.network?.verdict ?? "尚未检测")}
+              </span>
+              <button
+                type="button"
+                className="vf-btn-ghost vf-settings__pick"
+                onClick={() => void s.refreshNetwork()}
+                disabled={s.networkProbing}
+              >
+                {s.networkProbing ? "检测中…" : "重新检测"}
+              </button>
+            </div>
+          </div>
+
+          <dl className="vf-diag">
+            <div className="vf-diag__row">
+              <dt>当前出口</dt>
+              <dd className="vf-truncate">
+                {s.network
+                  ? `${s.network.modeLabel}${s.network.activeProxy ? ` · ${s.network.activeProxy}` : ""}`
+                  : "—"}
+              </dd>
+            </div>
+            <div className="vf-diag__row">
+              <dt>本机 DNS</dt>
+              <dd className="vf-truncate" title={s.network?.dns.detail}>
+                {probeText(s.network?.dns)}
+              </dd>
+            </div>
+            <div className="vf-diag__row">
+              <dt>直连</dt>
+              <dd className="vf-truncate" title={s.network?.direct.detail}>
+                {probeText(s.network?.direct)}
+              </dd>
+            </div>
+            <div className="vf-diag__row">
+              <dt>系统代理</dt>
+              <dd className="vf-truncate" title={s.network?.system.detail}>
+                {probeText(s.network?.system)}
+              </dd>
+            </div>
+            <div className="vf-diag__row">
+              <dt>自定义代理</dt>
+              <dd className="vf-truncate" title={s.network?.custom.detail}>
+                {probeText(s.network?.custom)}
+              </dd>
+            </div>
+            <div className="vf-diag__row">
+              <dt>代理端口</dt>
+              <dd className="vf-truncate" title={s.network?.activeProxyEndpoint?.detail}>
+                {probeText(s.network?.activeProxyEndpoint)}
+              </dd>
+            </div>
+          </dl>
+
+          <p className="vf-settings__note">
+            代理只影响 VideoFlow 自己，不改系统设置。SOCKS 代理下 HLS 任务（FFmpeg 不支持
+            SOCKS）与浏览器兜底窗口有限制，遇到问题优先用 HTTP 代理端口或开启 TUN。
+          </p>
         </section>
 
         <section className="vf-settings__group" aria-labelledby="vf-set-appearance">

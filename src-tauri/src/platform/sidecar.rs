@@ -43,7 +43,10 @@ pub fn locate(name: &str) -> Option<PathBuf> {
 
 /// 读取工具版本首行；失败时返回 None 而不是报错，硬件/环境不可得不是错误
 pub fn version_of(path: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new(path).args(args).output().ok()?;
+    // ffmpeg / yt-dlp 是控制台子系统程序：不加 CREATE_NO_WINDOW 会闪出终端窗口
+    let mut cmd = Command::new(path);
+    super::no_window(cmd.args(args));
+    let output = cmd.output().ok()?;
     let text = if output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stderr).to_string()
     } else {

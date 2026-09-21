@@ -46,8 +46,20 @@ impl AppError {
         Self::new("URL_SCHEME", "仅支持 https 链接", false)
     }
 
+    /// 目标落在内网 / 本机地址上，被 SSRF 防护拦下。
+    ///
+    /// 除了用户直接填内网地址，还有一种常见情形：公网域名在本机被解析成
+    /// 127.0.0.1（域名污染或分流）。文案必须说清判定发生在「本机解析」这一步，
+    /// 否则用户看到的是「不解析内网或本机地址」，会以为自己填错了链接。
     pub fn url_private() -> Self {
-        Self::new("URL_PRIVATE", "出于安全考虑，不解析内网或本机地址", false)
+        Self::new(
+            "URL_PRIVATE",
+            "该链接在本机被解析到内网或本机地址，出于安全考虑不予解析",
+            false,
+        )
+        .with_hint(
+            "若填的是公网链接，多半是本机 DNS 把它解析成了 127.0.0.1 这类地址（域名污染或分流）；请在代理软件里开启「系统代理」或 TUN 模式，再重启本应用重试",
+        )
     }
 
     pub fn provider_unsupported() -> Self {
@@ -93,6 +105,52 @@ impl AppError {
 
     pub fn network(msg: impl Into<String>) -> Self {
         Self::new("NETWORK_ERROR", msg, true).with_hint("请检查网络后重试")
+    }
+
+    /// 域名在本机被解析到内网 / 回环地址。
+    ///
+    /// 与「用户自己填了内网地址」是两回事：这里链接本身是公网地址，是**本机 DNS**
+    /// 给出了内网答案（域名污染或分流），所以文案必须把责任说清，并指向代理。
+    pub fn network_dns_polluted(host: &str) -> Self {
+        Self::new(
+            "NETWORK_DNS_POLLUTED",
+            format!("本机 DNS 把 {host} 解析到了内网或本机地址（域名污染）"),
+            true,
+        )
+        .with_hint(
+            "这是本机 DNS 的问题，不是链接的问题：请在代理软件里开启「系统代理」或 TUN，或在设置 → 网络与代理里配置自定义代理（SOCKS5H 由代理端解析域名）",
+        )
+    }
+
+    /// 目标站点在当前出口下不可达（直连与代理都不通）
+    pub fn network_unreachable(target: &str) -> Self {
+        Self::new(
+            "NETWORK_UNREACHABLE",
+            format!("当前网络无法访问 {target}"),
+            true,
+        )
+        .with_hint(
+            "请启用系统代理/TUN，或在设置 → 网络与代理里配置自定义代理（HTTP / SOCKS5）后重试",
+        )
+    }
+
+    /// 配置的代理不可用（连接被拒、超时、握手失败）
+    pub fn proxy_unavailable(proxy: &str, detail: &str) -> Self {
+        Self::new("PROXY_UNAVAILABLE", format!("代理 {proxy} 不可用"), true)
+            .with_hint("请确认代理软件正在运行、端口与类型填写正确；可到设置 → 网络与代理点「重新检测」")
+            .with_detail(detail.to_string())
+    }
+
+    /// X 链接的两条兜底链路都失败（yt-dlp 与 XDown），两条原因都要留下
+    pub fn provider_xdown_failed(ytdlp: &str, xdown: &str) -> Self {
+        Self::new("PROVIDER_XDOWN_FAILED", format!("X 链接解析失败：{xdown}"), false)
+            .with_hint("已依次尝试 yt-dlp 与 XDown 兜底；若该链接确实有视频，请检查登录态或稍后重试")
+            .with_detail(format!("yt-dlp：{ytdlp}；XDown：{xdown}"))
+    }
+
+    /// 设置项取值非法（例如代理地址写错）
+    pub fn setting_invalid(msg: impl Into<String>) -> Self {
+        Self::new("SETTING_INVALID", msg, false).with_hint("请修正后重试")
     }
 
     pub fn http_status(status: u16) -> Self {
@@ -195,5 +253,17 @@ mod tests {
         assert!(!AppError::http_status(429).requires_reparse());
         assert!(!AppError::http_status(500).requires_reparse());
         assert!(!AppError::network("断网").requires_reparse());
+    }
+
+    #[test]
+    fn 内网拦截文案说明是本机解析结果并给出代理提示() {
+        let err = AppError::url_private();
+        assert_eq!(err.code, "URL_PRIVATE");
+        assert!(!err.retryable);
+        // 判定发生在「本机解析」这一步，不能让人以为自己填了内网地址
+        assert!(err.message.contains("本机"), "实际：{}", err.message);
+        let hint = err.hint.expect("必须给出可操作提示");
+        assert!(hint.contains("127.0.0.1"), "实际：{hint}");
+        assert!(hint.contains("代理"), "实际：{hint}");
     }
 }

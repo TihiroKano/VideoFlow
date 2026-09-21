@@ -40,7 +40,14 @@ const POLL: Duration = Duration::from_millis(800);
 const LOGIN_BUDGET: Duration = Duration::from_secs(300);
 
 /// 打开（或复用）登录窗口并导航到站点登录页
-fn open_login_window(app: &AppHandle, site: &AccountSite) -> AppResult<tauri::WebviewWindow> {
+///
+/// `proxy_arg` 与解析窗口用同一个值（见 `net::proxy::browser_proxy_arg`）：
+/// 两个窗口共用一个 `data_directory`，WebView2 环境在创建时定型，参数必须一致。
+fn open_login_window(
+    app: &AppHandle,
+    site: &AccountSite,
+    proxy_arg: Option<&str>,
+) -> AppResult<tauri::WebviewWindow> {
     if let Some(existing) = app.get_webview_window(LOGIN_LABEL) {
         let _ = existing.set_title(&format!("登录 {} — 完成后可关闭本窗口", site.label));
         let _ = existing.navigate(parse(site.login_url)?);
@@ -59,7 +66,7 @@ fn open_login_window(app: &AppHandle, site: &AccountSite) -> AppResult<tauri::We
         .center()
         .data_directory(data_dir)
         // 登录窗口不注入 hook.js：这里不需要媒体嗅探
-        .additional_browser_args("--disable-notifications")
+        .additional_browser_args(&crate::resolver::browser::driver::browser_args(proxy_arg))
         .build()
         .map_err(|e| {
             AppError::new("ACCOUNT_WINDOW_FAILED", "无法打开登录窗口", true)
@@ -84,9 +91,10 @@ fn parse(url: &str) -> AppResult<url::Url> {
 pub async fn wait_for_login(
     app: &AppHandle,
     site: &AccountSite,
+    proxy_arg: Option<&str>,
     mut force: impl FnMut() -> bool,
 ) -> AppResult<bool> {
-    let window = open_login_window(app, site)?;
+    let window = open_login_window(app, site, proxy_arg)?;
     let cookie_url = parse(site.cookie_url)?;
     let deadline = tokio::time::Instant::now() + LOGIN_BUDGET;
 

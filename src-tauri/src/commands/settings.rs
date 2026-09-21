@@ -59,6 +59,30 @@ pub fn set_setting(state: State<'_, Arc<AppState>>, key: String, value: Value) -
                 .ok_or_else(|| AppError::internal("cookiesSource 必须是字符串"))?;
             patch.cookies_source = Some(source.to_string());
         }
+        // 网络出口：direct / system / custom
+        "proxyMode" => {
+            let mode = value
+                .as_str()
+                .ok_or_else(|| AppError::internal("proxyMode 必须是字符串"))?;
+            if crate::net::ProxyMode::parse(mode).is_none() {
+                return Err(AppError::setting_invalid(format!(
+                    "未知的网络出口模式：{mode}（可选 direct / system / custom）"
+                )));
+            }
+            patch.proxy_mode = Some(mode.to_string());
+        }
+        // 自定义代理地址：这里就校验，别等到下载时才失败
+        "proxyUrl" => {
+            let url = value
+                .as_str()
+                .ok_or_else(|| AppError::internal("proxyUrl 必须是字符串"))?;
+            if url.trim().is_empty() {
+                patch.proxy_url = Some(String::new());
+            } else {
+                let normalized = crate::net::proxy::normalize(url)?;
+                patch.proxy_url = Some(normalized);
+            }
+        }
         other => {
             return Err(AppError::new(
                 "SETTING_UNKNOWN",

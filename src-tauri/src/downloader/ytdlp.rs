@@ -12,6 +12,7 @@ use tokio::process::Command;
 use crate::core::model::ResumeCheckpoint;
 use crate::error::{AppError, AppResult};
 use crate::platform::sidecar;
+use crate::resolver::ytdlp::YtDlpProxy;
 
 use super::http::ProgressSnapshot;
 use super::{ControlState, ControlToken, SpeedMeter};
@@ -30,6 +31,8 @@ pub struct YtDlpRequest {
     pub referer: Option<String>,
     /// 登录态来源（`Settings::cookies_source`）；站点要求登录时必须提供
     pub cookies_source: Option<String>,
+    /// 出口代理：与解析链路用同一份，保证「解析走哪条、下载就走哪条」
+    pub proxy: YtDlpProxy,
 }
 
 #[derive(Debug)]
@@ -77,6 +80,9 @@ fn build_args(req: &YtDlpRequest) -> Vec<String> {
     // 复用登录态：抖音必须登录才能取到播放地址，
     // Bilibili 的高码率/60 帧同样只对已登录账号开放
     crate::resolver::ytdlp::append_cookie_args(&mut args, req.cookies_source.as_deref());
+
+    // 出口：与解析链路同一个代理（直连时不传参数并清环境变量）
+    req.proxy.append_args(&mut args);
 
     let template = req
         .scratch_dir
@@ -165,6 +171,8 @@ pub async fn download(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // 直连模式：清掉子进程环境里的代理变量，避免「名义直连、实际走代理」
+    req.proxy.apply_env(&mut cmd);
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;

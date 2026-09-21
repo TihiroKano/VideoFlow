@@ -96,7 +96,7 @@ async fn collect_status(state: &AppState) -> Vec<AccountSiteStatus> {
                 .filter(|c| c.belongs_to(site))
                 .cloned()
                 .collect();
-            verify_bilibili(&state.client, &cookie_header(&own)).await
+            verify_bilibili(&state.client(), &cookie_header(&own)).await
         } else {
             None
         };
@@ -141,7 +141,8 @@ pub async fn account_login(
     flag.store(false, std::sync::atomic::Ordering::SeqCst);
     let force = move || flag.load(std::sync::atomic::Ordering::SeqCst);
 
-    let proceed = window::wait_for_login(&app, site, force).await?;
+    let proxy_arg = state.browser_proxy_arg();
+    let proceed = window::wait_for_login(&app, site, proxy_arg.as_deref(), force).await?;
     if !proceed {
         return Err(AppError::new("ACCOUNT_LOGIN_CANCELLED", "已取消登录", false));
     }
@@ -166,7 +167,7 @@ pub async fn account_login(
             .cloned()
             .collect();
         let verified = if site.key == "bilibili" {
-            verify_bilibili(&state.client, &cookie_header(&own)).await
+            verify_bilibili(&state.client(), &cookie_header(&own)).await
         } else {
             // 其它站点没有公开的校验接口，能读到登录 Cookie 即视为有效
             Some(VerifyResult::default())

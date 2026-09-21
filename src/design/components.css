@@ -1369,7 +1369,8 @@ html[data-vf-reduced-motion="true"] .vf-skeleton {
 }
 
 /* 设置页下拉：借用原生 select，同时保证弹出层跟随深色主题 */
-.vf-settings__select {
+/* 设置页文本输入（网络出口的自定义代理地址）：与下拉同一套玻璃观感 */
+.vf-settings__input {
   height: 34px;
   min-width: 172px;
   padding: 0 12px;
@@ -1378,15 +1379,28 @@ html[data-vf-reduced-motion="true"] .vf-skeleton {
   border: 1px solid var(--vf-glass-border-soft);
   color: var(--vf-text);
   font-size: 13px;
-  cursor: pointer;
-  color-scheme: dark;
+  font-variant-numeric: tabular-nums;
   transition: background var(--vf-dur-fast) var(--vf-ease),
     border-color var(--vf-dur-fast) var(--vf-ease);
 }
 
-.vf-settings__select:hover {
+.vf-settings__input::placeholder {
+  color: var(--vf-text-faint);
+}
+
+.vf-settings__input:hover {
   background: rgb(255 255 255 / 16%);
+}
+
+/* 全局规则会给输入框加 box-shadow 与 14px 圆角，这里逐项还原成胶囊观感 */
+.vf-settings__input:focus-visible {
+  box-shadow: none;
+  border-radius: var(--vf-radius-control);
   border-color: var(--vf-glass-border);
+}
+
+.vf-settings__input--invalid {
+  border-color: rgb(255 160 160 / 55%);
 }
 
 /* 已选 cookies.txt 的路径按钮：过长时省略，靠 title 显示全路径 */
@@ -1573,6 +1587,8 @@ html[data-vf-reduced-motion="true"] .vf-skeleton {
   /* 提示条是浮层：默认不拦截指针，避免遮住下方的设置项与列表 */
   pointer-events: none;
   animation: vf-toast-in var(--vf-dur-base) var(--vf-ease);
+  transition: opacity var(--vf-dur-base) var(--vf-ease),
+    transform var(--vf-dur-base) var(--vf-ease);
 }
 
 @keyframes vf-toast-in {
@@ -1586,8 +1602,15 @@ html[data-vf-reduced-motion="true"] .vf-skeleton {
   }
 }
 
+/* 自动消失前的渐隐阶段：计时到期先加此类，过渡结束再移除节点 */
+.vf-toast--leaving {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
 html[data-vf-reduced-motion="true"] .vf-toast {
   animation: none;
+  transition: none;
 }
 
 .vf-toast__icon {
